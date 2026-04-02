@@ -2,6 +2,7 @@
 
 import os
 import re
+from datetime import datetime
 
 
 def sanitize_filename(name: str, max_length: int = 200) -> str:
@@ -39,6 +40,17 @@ def normalize_date(date_str: str) -> str:
     if match:
         y, m, d = match.groups()
         return f"{y}-{int(m):02d}-{int(d):02d}"
+
+    # 상대시간 처리: "N분 전", "N시간 전", "N일 전", "방금" 등
+    relative = date_str.strip()
+    if re.match(r"(\d+)\s*(분|시간)\s*전", relative) or relative in ("방금", "방금 전"):
+        return datetime.now().strftime("%Y-%m-%d")
+    day_match = re.match(r"(\d+)\s*일\s*전", relative)
+    if day_match:
+        from datetime import timedelta
+        days = int(day_match.group(1))
+        return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
     return date_str.strip()
 
 
