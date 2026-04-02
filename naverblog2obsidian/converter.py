@@ -95,9 +95,57 @@ def html_to_markdown(soup: Optional[BeautifulSoup]) -> str:
         return ""
 
     # 불필요한 요소 제거
-    for tag_name in ["script", "style", "noscript"]:
+    for tag_name in ["script", "style", "noscript", "iframe"]:
         for tag in soup.find_all(tag_name):
             tag.decompose()
+
+    # 네이버 블로그 UI 요소 제거 (프로파일, 공유, 신고, 이웃추가 등)
+    remove_classes = [
+        "blog_author_profile",  # 프로파일 영역
+        "blog2_series",         # 시리즈
+        "post_author",          # 작성자
+        "se_author",            # 작성자
+        "se_publishDate",       # 날짜
+        "blog_date",            # 날짜
+        "post_tag",             # 태그 (frontmatter로 이동)
+        "se_tag",               # 태그
+        "btn_share",            # 공유 버튼
+        "post_footer",          # 하단 버튼들
+        "post_header",          # 상단 헤더
+        "se-section-oglink",    # OG 링크 프리뷰
+    ]
+    for cls in remove_classes:
+        for el in soup.find_all(class_=cls):
+            el.decompose()
+
+    # 카테고리 링크 제거 (PostList.naver 링크)
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        if "PostList.naver" in href or "이웃추가" in a.get_text() or "공유하기" in a.get_text() or "신고하기" in a.get_text() or "URL 복사" in a.get_text():
+            a.decompose()
+
+    # 프로파일 이미지+블로그명 링크 제거
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        if "blog.naver.com/" in href:
+            # 프로파일 이미지가 포함된 링크
+            if a.find("img"):
+                text = a.get_text(strip=True)
+                if not text or len(text) < 30:
+                    a.decompose()
+                    continue
+            # 블로그 메인 링크 (블로그명만 있는 짧은 링크)
+            text = a.get_text(strip=True)
+            if text and len(text) < 20 and not a.find("img"):
+                # "메르", "데이터는알고있다" 등 블로그명
+                if re.match(r"^https?://blog\.naver\.com/\w+/?$", href):
+                    a.decompose()
+
+    # "본문 기타 기능" 등 잡다한 UI 텍스트 포함 요소 제거
+    for el in soup.find_all(string=re.compile(r"(본문 기타 기능|이웃추가|URL 복사|공유하기|신고하기)")):
+        parent = el.parent
+        if parent and parent.name in ("a", "span", "div", "button"):
+            parent.decompose()
 
     # 구분선 요소 → <hr> 변환
     for div in soup.find_all("div", class_="se-section-delimiter"):
@@ -117,6 +165,9 @@ def html_to_markdown(soup: Optional[BeautifulSoup]) -> str:
 
     # 정리
     md = re.sub(r"\n{3,}", "\n\n", md)  # 3줄 이상 빈 줄 → 2줄
+    md = re.sub(r"^\s*\*・\*\s*$", "", md, flags=re.MULTILINE)  # "・" 구분자 제거
+    md = re.sub(r"^\s*​\s*$", "", md, flags=re.MULTILINE)  # 네이버 빈 문자(​) 줄 제거
+    md = re.sub(r"\n{3,}", "\n\n", md)  # 다시 정리
     md = md.strip()
 
     return md
@@ -141,12 +192,9 @@ def build_frontmatter(
     Returns:
         YAML frontmatter 문자열
     """
-    # 날짜 정규화: "2024. 3. 24." → "2024-03-24"
-    date_normalized = ""
-    date_match = re.match(r"(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})", date)
-    if date_match:
-        y, m, d = date_match.groups()
-        date_normalized = f"{y}-{int(m):02d}-{int(d):02d}"
+    # 날짜 정규화
+    from .utils import normalize_date
+    date_normalized = normalize_date(date) if date else ""
 
     # 제목에서 YAML 특수문자 이스케이프
     safe_title = title.replace('"', '\\"')
@@ -188,5 +236,24 @@ def convert_post(
     tags = extract_hashtags(html_soup)
     frontmatter = build_frontmatter(title, date, url, category, tags)
     body = html_to_markdown(html_soup)
+
+    # 본문에서 제목과 유사한 텍스트 줄 제거 (중복 방지)
+    import unicodedata
+    def _normalize_title(t):
+        """제목 비교용 정규화: 공백/특수문자 무시"""
+        t = re.sub(r'[#\s?？!！.,·\u200b\u200c\u200d\ufeff]', '', t)
+        return t.lower()
+
+    lines = body.split("\n")
+    cleaned_lines = []
+    title_norm = _normalize_title(title)
+    removed_count = 0
+    for line in lines:
+        line_norm = _normalize_title(line)
+        if removed_count < 3 and line_norm and title_norm and line_norm == title_norm:
+            removed_count += 1
+            continue
+        cleaned_lines.append(line)
+    body = "\n".join(cleaned_lines).strip()
 
     return f"{frontmatter}\n\n# {title}\n\n{body}\n"

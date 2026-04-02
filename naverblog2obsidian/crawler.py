@@ -207,11 +207,24 @@ class NaverBlogCrawler:
         # " : 네이버 블로그" 접미사 제거
         title = re.sub(r"\s*:\s*네이버\s*블로그\s*$", "", title)
 
-        # 작성일 추출
-        date_tag = soup.find("span", class_="se_publishDate") or soup.find(
-            "p", class_="blog_date"
-        )
-        date_str = date_tag.text.strip() if date_tag else ""
+        # 작성일 추출 — 여러 위치에서 시도
+        date_str = ""
+        date_candidates = [
+            soup.find("span", class_="se_publishDate"),
+            soup.find("p", class_="blog_date"),
+            soup.find("span", class_="se_date"),
+        ]
+        # 날짜 패턴으로 직접 검색
+        if not any(date_candidates):
+            import re as _re
+            date_pattern = _re.compile(r"\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.\s*\d{1,2}:\d{2}")
+            date_match_tag = soup.find(string=date_pattern)
+            if date_match_tag:
+                date_str = date_match_tag.strip()
+        for dt in date_candidates:
+            if dt:
+                date_str = dt.text.strip()
+                break
 
         # 본문 추출
         post_view = soup.find("div", attrs={"id": f"post-view{log_no}"})
