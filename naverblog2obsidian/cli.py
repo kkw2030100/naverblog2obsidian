@@ -10,6 +10,7 @@ from tqdm import tqdm
 from .converter import convert_post, extract_images
 from .crawler import NaverBlogCrawler
 from .downloader import ImageDownloader, replace_image_urls
+from .formatter import format_with_ai
 from .utils import ensure_dir, make_post_filename, sanitize_folder_name
 
 
@@ -86,6 +87,31 @@ def interactive_mode():
     img_input = input("🖼️  이미지도 다운로드할까요? (y/N): ").strip().lower()
     download_images = img_input in ("y", "yes", "ㅇ", "네")
 
+    # 4.5. AI 포맷 옵션
+    print()
+    print("✨ AI 포맷을 사용하면 옵시디언에 최적화된 형태로 변환됩니다.")
+    print("   (Callout, 이모지 헤더, 테이블, 핵심 요약 등)")
+    print("   ⚠️  OpenAI 또는 Anthropic API 키가 필요합니다.")
+    format_input = input("✨ AI 포맷을 적용할까요? (y/N): ").strip().lower()
+    use_format = format_input in ("y", "yes", "ㅇ", "네")
+
+    ai_provider = "openai"
+    ai_model = None
+    ai_api_key = None
+    if use_format:
+        print()
+        print("  AI 제공자를 선택하세요:")
+        print("  1. OpenAI (gpt-4o-mini) — 기본")
+        print("  2. Anthropic (Claude)")
+        provider_input = input("  선택 (1/2, 기본: 1): ").strip()
+        if provider_input == "2":
+            ai_provider = "anthropic"
+
+        key_input = input(f"  {'OPENAI' if ai_provider == 'openai' else 'ANTHROPIC'}_API_KEY "
+                          f"(환경변수에 있으면 Enter): ").strip()
+        if key_input:
+            ai_api_key = key_input
+
     # 5. 확인
     print()
     print("=" * 50)
@@ -97,6 +123,7 @@ def interactive_mode():
         print("  카테고리: 전체")
     print(f"  저장 경로: {os.path.abspath(dest)}")
     print(f"  이미지 다운로드: {'예' if download_images else '아니오'}")
+    print(f"  AI 포맷: {'예 (' + ai_provider + ')' if use_format else '아니오'}")
     print("=" * 50)
     print()
     confirm = input("시작할까요? (Y/n): ").strip().lower()
@@ -113,6 +140,10 @@ def interactive_mode():
         delay=0.5,
         skip_existing=False,
         verbose=True,
+        use_format=use_format,
+        ai_provider=ai_provider,
+        ai_model=ai_model,
+        ai_api_key=ai_api_key,
     )
 
 
@@ -125,6 +156,10 @@ def run_export(
     skip_existing: bool = False,
     verbose: bool = False,
     single_url: Optional[str] = None,
+    use_format: bool = False,
+    ai_provider: str = "openai",
+    ai_model: Optional[str] = None,
+    ai_api_key: Optional[str] = None,
 ):
     """실제 내보내기 실행
 
@@ -143,8 +178,15 @@ def run_export(
 
     ensure_dir(dest)
 
+    format_opts = {
+        "use_format": use_format,
+        "ai_provider": ai_provider,
+        "ai_model": ai_model,
+        "ai_api_key": ai_api_key,
+    }
+
     if single_url:
-        _process_single_url(crawler, single_url, dest, categories, img_downloader, verbose)
+        _process_single_url(crawler, single_url, dest, categories, img_downloader, verbose, format_opts)
         return
 
     # 카테고리별 또는 전체 글 목록 수집
@@ -216,6 +258,26 @@ def run_export(
                 category=cat_name,
             )
 
+            # AI 포맷 적용
+            if use_format:
+                try:
+                    from .converter import extract_hashtags
+                    tags = extract_hashtags(html_soup)
+                    markdown = format_with_ai(
+                        markdown=markdown,
+                        title=fetched_title or title,
+                        date=fetched_date,
+                        source_url=url,
+                        category=cat_name,
+                        tags=tags,
+                        provider=ai_provider,
+                        model=ai_model,
+                        api_key=ai_api_key,
+                    )
+                except Exception as e:
+                    if verbose:
+                        tqdm.write(f"  ⚠️  AI 포맷 실패, 기본 형태 유지: {e}")
+
             # 이미지 다운로드
             if img_downloader and html_soup:
                 image_urls = extract_images(html_soup)
@@ -254,8 +316,9 @@ def run_export(
     print("=" * 50)
 
 
-def _process_single_url(crawler, url, dest, categories, img_downloader, verbose):
+def _process_single_url(crawler, url, dest, categories, img_downloader, verbose, format_opts=None):
     """단일 URL 처리"""
+    format_opts = format_opts or {}
     blog_id, log_no = NaverBlogCrawler.extract_post_info(url)
     crawler_for_post = NaverBlogCrawler(blog_id, delay=crawler.delay)
 
@@ -268,6 +331,26 @@ def _process_single_url(crawler, url, dest, categories, img_downloader, verbose)
         url=url,
         category="",
     )
+
+    # AI 포맷 적용
+    if format_opts.get("use_format"):
+        try:
+            from .converter import extract_hashtags
+            tags = extract_hashtags(html_soup)
+            markdown = format_with_ai(
+                markdown=markdown,
+                title=title,
+                date=date,
+                source_url=url,
+                category="",
+                tags=tags,
+                provider=format_opts.get("ai_provider", "openai"),
+                model=format_opts.get("ai_model"),
+                api_key=format_opts.get("ai_api_key"),
+            )
+        except Exception as e:
+            if verbose:
+                print(f"  ⚠️  AI 포맷 실패, 기본 형태 유지: {e}")
 
     if img_downloader and html_soup:
         image_urls = extract_images(html_soup)
@@ -339,6 +422,16 @@ def main():
         "--skip-existing", action="store_true", help="기존 파일 건너뛰기 (이어받기)"
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="상세 로그 출력")
+    parser.add_argument(
+        "--format", action="store_true",
+        help="AI로 옵시디언 최적화 포맷 적용 (Callout, 이모지 헤더, 테이블 등)"
+    )
+    parser.add_argument(
+        "--provider", default="openai", choices=["openai", "anthropic"],
+        help="AI 제공자 (기본: openai)"
+    )
+    parser.add_argument("--model", help="AI 모델명 (기본: gpt-4o-mini / claude-sonnet)")
+    parser.add_argument("--api-key", help="AI API 키 (환경변수 대신 직접 입력)")
 
     args = parser.parse_args()
 
@@ -356,6 +449,10 @@ def main():
             delay=args.delay,
             verbose=args.verbose,
             single_url=args.url,
+            use_format=args.format,
+            ai_provider=args.provider,
+            ai_model=args.model,
+            ai_api_key=getattr(args, 'api_key', None),
         )
         return
 
@@ -397,6 +494,10 @@ def main():
         delay=args.delay,
         skip_existing=args.skip_existing,
         verbose=args.verbose,
+        use_format=args.format,
+        ai_provider=args.provider,
+        ai_model=args.model,
+        ai_api_key=getattr(args, 'api_key', None),
     )
 
 
